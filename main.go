@@ -49,6 +49,7 @@ func main() {
 		return
 	}
 
+	targetOutputAvailableForToggle := true
 	if *toggle {
 		debounced, err := debounceToggle(750 * time.Millisecond)
 		if err != nil {
@@ -57,14 +58,22 @@ func main() {
 			fmt.Fprintln(os.Stderr, "focus: ignored repeated hotkey event")
 			return
 		}
+
+		available, err := isAudioOutputAvailable(*deviceName)
+		if err != nil || !available {
+			targetOutputAvailableForToggle = false
+			fmt.Fprintf(os.Stderr, "focus: audio output %q is unavailable; connecting before touching kew\n", *deviceName)
+		}
 	}
 
-	toggled, err := toggleExistingKewIfAny()
-	if err != nil {
-		fatal("could not toggle existing kew process", err)
-	}
-	if toggled {
-		return
+	if !*toggle || targetOutputAvailableForToggle {
+		toggled, err := toggleExistingKewIfAny()
+		if err != nil {
+			fatal("could not toggle existing kew process", err)
+		}
+		if toggled {
+			return
+		}
 	}
 
 	stateWritten := false
@@ -110,6 +119,16 @@ func main() {
 		}
 		connectedName = audioOutputName
 		fmt.Fprintf(os.Stderr, "focus: audio output set to %q\n", connectedName)
+	}
+
+	if *toggle && !targetOutputAvailableForToggle {
+		resumed, err := resumeExistingKewIfAny(connectedName)
+		if err != nil {
+			fatal("could not resume existing kew process", err)
+		}
+		if resumed {
+			return
+		}
 	}
 
 	if _, err := exec.LookPath("kew"); err != nil {
