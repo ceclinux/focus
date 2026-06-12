@@ -10,6 +10,8 @@ While `kew` is running, `focus` watches the playback audio output. If `rcs app2`
 go build -o focus .
 ```
 
+GitHub Actions builds release archives for Intel Macs (`darwin-amd64`) and Apple silicon Macs (`darwin-arm64`) whenever a `v*` tag is pushed. You can also run the **Release** workflow manually with a tag such as `v0.1.0`.
+
 Optionally install it on your PATH:
 
 ```sh

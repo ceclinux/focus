@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}-${{ github.event.inputs.tag || '' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Package ${{ matrix.name }}
+    runs-on: macos-13
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Intel Macs
+            goarch: amd64
+            clang_arch: x86_64
+            suffix: darwin-amd64
+          - name: Apple silicon Macs
+            goarch: arm64
+            clang_arch: arm64
+            suffix: darwin-arm64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: "1"
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+          CC: clang -arch ${{ matrix.clang_arch }}
+          CGO_CFLAGS: -arch ${{ matrix.clang_arch }}
+          CGO_LDFLAGS: -arch ${{ matrix.clang_arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/package
+          go build -trimpath -ldflags="-s -w" -o build/package/focus .
+          file build/package/focus
+          cp README.md build/package/
+
+      - name: Package archives
+        env:
+          SUFFIX: ${{ matrix.suffix }}
+          INPUT_TAG: ${{ github.event.inputs.tag || '' }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_TAG:-${GITHUB_REF_NAME}}"
+          ARCHIVE="focus-${VERSION}-${SUFFIX}"
+          mkdir -p dist
+          tar -C build/package -czf "dist/${ARCHIVE}.tar.gz" focus README.md
+          (cd build/package && zip -q -r "../../dist/${ARCHIVE}.zip" focus README.md)
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: focus-${{ matrix.suffix }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum * > checksums.txt
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event.inputs.tag || '' }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG:-${GITHUB_REF_NAME}}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$TAG" \
+              --generate-notes
+          fi
