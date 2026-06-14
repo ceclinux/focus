@@ -22,6 +22,7 @@ func main() {
 	hotkeyDaemon := flag.Bool("hotkey-daemon", false, "run the global hotkey daemon")
 	kewNoUI := flag.Bool("noui", false, "pass --noui to kew")
 	toggle := flag.Bool("toggle", false, "debounce hotkey repeats; existing kew playback is paused/resumed")
+	kill := flag.Bool("kill", false, "fully stop kew with SIGKILL instead of pausing")
 	deviceName := flag.String("device", getenvDefault("FOCUS_BT_DEVICE", defaultDeviceName), "paired Bluetooth device name to connect")
 	defaultQuery := flag.String("query", getenvDefault("FOCUS_KEW_QUERY", defaultKewQuery), "kew search query to use when no positional query is supplied")
 	flag.Parse()
@@ -171,9 +172,14 @@ func main() {
 		} else {
 			fmt.Fprintf(os.Stderr, "focus: playback device %q disconnected\n", connectedName)
 		}
-		fmt.Fprintln(os.Stderr, "focus: pausing kew")
-		pauseKew(cmd.Process.Pid)
-		if err := writePlaybackState(playbackState{KewPID: cmd.Process.Pid, Paused: true}); err != nil {
+		if *kill {
+			fmt.Fprintln(os.Stderr, "focus: stopping kew")
+			stopKew(cmd.Process.Pid)
+		} else {
+			fmt.Fprintln(os.Stderr, "focus: pausing kew")
+			pauseKew(cmd.Process.Pid)
+		}
+		if err := writePlaybackState(playbackState{KewPID: cmd.Process.Pid, Paused: *kill}); err != nil {
 			fmt.Fprintf(os.Stderr, "focus: could not write paused playback state: %v\n", err)
 		}
 	}

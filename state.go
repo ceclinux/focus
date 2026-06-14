@@ -199,26 +199,60 @@ func monitorExistingKew(pid int, deviceName string) {
 	}
 }
 
-func toggleKewState(state playbackState) error {
+func toggleKewState(state playbackState, kill bool) error {
 	paused := state.Paused || isPIDStopped(state.KewPID)
 	if paused {
 		resumeKew(state.KewPID)
 		state.Paused = false
 		fmt.Fprintf(os.Stderr, "focus: resumed kew process %d\n", state.KewPID)
 	} else {
-		pauseKew(state.KewPID)
-		state.Paused = true
-		fmt.Fprintf(os.Stderr, "focus: paused kew process %d\n", state.KewPID)
+		if kill {
+			stopKew(state.KewPID)
+			state.Paused = true
+			fmt.Fprintf(os.Stderr, "focus: stopped kew process %d\n", state.KewPID)
+		} else {
+			pauseKew(state.KewPID)
+			state.Paused = true
+			fmt.Fprintf(os.Stderr, "focus: paused kew process %d\n", state.KewPID)
+		}
 	}
 	return writePlaybackState(state)
+}
+
+func getProcessName(pid int) (string, error) {
+	if pid <= 0 {
+		return "", fmt.Errorf("invalid pid")
+	}
+	output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func pauseKew(pid int) {
 	if pid <= 0 {
 		return
 	}
+	name, err := getProcessName(pid)
+	if err != nil || !strings.Contains(name, "kew") {
+		return
+	}
 	if err := syscall.Kill(-pid, syscall.SIGSTOP); err != nil {
 		_ = syscall.Kill(pid, syscall.SIGSTOP)
+	}
+}
+
+func stopKew(pid int) {
+	if pid <= 0 {
+		return
+	}
+	name, err := getProcessName(pid)
+	if err != nil || !strings.Contains(name, "kew") {
+		return
+	}
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 }
 
