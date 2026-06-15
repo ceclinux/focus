@@ -68,7 +68,7 @@ func main() {
 	}
 
 	if !*toggle || targetOutputAvailableForToggle {
-		toggled, err := toggleExistingKewIfAny()
+		toggled, err := toggleExistingKewIfAny(*kill)
 		if err != nil {
 			fatal("could not toggle existing kew process", err)
 		}

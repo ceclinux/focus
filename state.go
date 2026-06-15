@@ -98,7 +98,7 @@ func debounceToggle(interval time.Duration) (bool, error) {
 	return false, os.WriteFile(path, []byte(strconv.FormatInt(time.Now().UnixNano(), 10)), 0o644)
 }
 
-func toggleExistingKewIfAny() (bool, error) {
+func toggleExistingKewIfAny(kill bool) (bool, error) {
 	state, found, err := findExistingKewState()
 	if err != nil {
 		return false, err
@@ -111,7 +111,7 @@ func toggleExistingKewIfAny() (bool, error) {
 		return true, nil
 	}
 
-	return true, toggleKewState(state)
+	return true, toggleKewState(state, kill)
 }
 
 func resumeExistingKewIfAny(deviceName string) (bool, error) {
