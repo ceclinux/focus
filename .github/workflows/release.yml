@@ -21,7 +21,7 @@ concurrency:
 jobs:
   build:
     name: Package ${{ matrix.name }}
-    runs-on: macos-13
+    runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
