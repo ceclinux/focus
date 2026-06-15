@@ -52,15 +52,14 @@ jobs:
           CC: clang -arch ${{ matrix.clang_arch }}
           CGO_CFLAGS: -arch ${{ matrix.clang_arch }}
           CGO_LDFLAGS: -arch ${{ matrix.clang_arch }}
+          SUFFIX: ${{ matrix.suffix }}
+          INPUT_TAG: ${{ github.event.inputs.tag || '' }}
         run: |
           set -euo pipefail
           VERSION="${INPUT_TAG:-${GITHUB_REF_NAME}}"
           mkdir -p dist
           go build -trimpath -ldflags="-s -w" -o "dist/focus-${VERSION}-${SUFFIX}" .
           file "dist/focus-${VERSION}-${SUFFIX}"
-        env:
-          SUFFIX: ${{ matrix.suffix }}
-          INPUT_TAG: ${{ github.event.inputs.tag || '' }}
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
