@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   build:
-    name: Package ${{ matrix.name }}
+    name: Build ${{ matrix.name }}
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -54,28 +54,19 @@ jobs:
           CGO_LDFLAGS: -arch ${{ matrix.clang_arch }}
         run: |
           set -euo pipefail
-          mkdir -p build/package
-          go build -trimpath -ldflags="-s -w" -o build/package/focus .
-          file build/package/focus
-          cp README.md build/package/
-
-      - name: Package archives
+          VERSION="${INPUT_TAG:-${GITHUB_REF_NAME}}"
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" -o "dist/focus-${VERSION}-${SUFFIX}" .
+          file "dist/focus-${VERSION}-${SUFFIX}"
         env:
           SUFFIX: ${{ matrix.suffix }}
           INPUT_TAG: ${{ github.event.inputs.tag || '' }}
-        run: |
-          set -euo pipefail
-          VERSION="${INPUT_TAG:-${GITHUB_REF_NAME}}"
-          ARCHIVE="focus-${VERSION}-${SUFFIX}"
-          mkdir -p dist
-          tar -C build/package -czf "dist/${ARCHIVE}.tar.gz" focus README.md
-          (cd build/package && zip -q -r "../../dist/${ARCHIVE}.zip" focus README.md)
 
-      - name: Upload packaged artifacts
+      - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: focus-${{ matrix.suffix }}
-          path: dist/*
+          path: dist/focus-*
           if-no-files-found: error
 
   publish:
@@ -83,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Download packaged artifacts
+      - name: Download binaries
         uses: actions/download-artifact@v4
         with:
           path: dist
