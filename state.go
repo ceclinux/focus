@@ -14,7 +14,6 @@ import (
 type playbackState struct {
 	FocusPID int
 	KewPID   int
-	Paused   bool
 }
 
 func playbackStatePath() (string, error) {
@@ -41,11 +40,7 @@ func writePlaybackState(state playbackState) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	paused := 0
-	if state.Paused {
-		paused = 1
-	}
-	return os.WriteFile(path, []byte(fmt.Sprintf("%d %d %d\n", state.FocusPID, state.KewPID, paused)), 0o644)
+	return os.WriteFile(path, []byte(fmt.Sprintf("%d %d\n", state.FocusPID, state.KewPID)), 0o644)
 }
 
 func removePlaybackState() {
@@ -76,11 +71,7 @@ func readPlaybackState() (playbackState, error) {
 	if err != nil {
 		return playbackState{}, err
 	}
-	paused := false
-	if len(fields) >= 3 {
-		paused = fields[2] == "1" || strings.EqualFold(fields[2], "true")
-	}
-	return playbackState{FocusPID: focusPID, KewPID: kewPID, Paused: paused}, nil
+	return playbackState{FocusPID: focusPID, KewPID: kewPID}, nil
 }
 
 func debounceToggle(interval time.Duration) (bool, error) {
@@ -98,125 +89,48 @@ func debounceToggle(interval time.Duration) (bool, error) {
 	return false, os.WriteFile(path, []byte(strconv.FormatInt(time.Now().UnixNano(), 10)), 0o644)
 }
 
-func toggleExistingKewIfAny(kill bool) (bool, error) {
-	state, found, err := findExistingKewState()
+func stopExistingKewIfAny() (bool, error) {
+	pid, err := findExistingKewPID()
 	if err != nil {
 		return false, err
 	}
-	if !found {
+	if pid <= 0 {
 		return false, nil
 	}
-	if state.KewPID <= 0 {
-		fmt.Fprintln(os.Stderr, "focus: existing focus startup/playback is already in progress")
-		return true, nil
-	}
 
-	return true, toggleKewState(state, kill)
-}
-
-func resumeExistingKewIfAny(deviceName string) (bool, error) {
-	state, found, err := findExistingKewState()
-	if err != nil {
-		return false, err
-	}
-	if !found {
+	if !pidAlive(pid) {
+		removePlaybackState()
 		return false, nil
 	}
-	if state.KewPID <= 0 {
-		fmt.Fprintln(os.Stderr, "focus: existing focus startup/playback is already in progress")
-		return true, nil
-	}
 
-	if state.Paused || isPIDStopped(state.KewPID) {
-		resumeKew(state.KewPID)
-		fmt.Fprintf(os.Stderr, "focus: resumed kew process %d\n", state.KewPID)
-	} else {
-		fmt.Fprintf(os.Stderr, "focus: kew process %d is already running\n", state.KewPID)
-	}
-
-	state.FocusPID = os.Getpid()
-	state.Paused = false
-	if err := writePlaybackState(state); err != nil {
-		return true, err
-	}
-
-	monitorExistingKew(state.KewPID, deviceName)
+	stopKew(pid)
+	removePlaybackState()
+	fmt.Fprintf(os.Stderr, "focus: stopped kew process %d\n", pid)
 	return true, nil
 }
 
-func findExistingKewState() (playbackState, bool, error) {
+func adoptExistingKew(deviceName string) (bool, error) {
 	state, err := readPlaybackState()
-	if err == nil {
-		if state.KewPID > 0 && pidAlive(state.KewPID) {
-			return state, true, nil
-		}
-		if state.FocusPID > 0 && state.FocusPID != os.Getpid() && pidAlive(state.FocusPID) {
-			return playbackState{FocusPID: state.FocusPID}, true, nil
-		}
-		removePlaybackState()
-	} else if err != nil && !os.IsNotExist(err) {
-		removePlaybackState()
-	}
-
-	pid, err := findExistingKewPID()
 	if err != nil {
-		return playbackState{}, false, err
-	}
-	if pid <= 0 {
-		return playbackState{}, false, nil
-	}
-
-	return playbackState{KewPID: pid, Paused: isPIDStopped(pid)}, true, nil
-}
-
-func monitorExistingKew(pid int, deviceName string) {
-	disconnectCh := make(chan error, 1)
-	go monitorPlaybackDevice(deviceName, disconnectCh)
-
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case err := <-disconnectCh:
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "focus: playback device monitor error: %v\n", err)
-			} else {
-				fmt.Fprintf(os.Stderr, "focus: playback device %q disconnected\n", deviceName)
-			}
-			fmt.Fprintln(os.Stderr, "focus: pausing kew")
-			pauseKew(pid)
-			if err := writePlaybackState(playbackState{KewPID: pid, Paused: true}); err != nil {
-				fmt.Fprintf(os.Stderr, "focus: could not write paused playback state: %v\n", err)
-			}
-			return
-		case <-ticker.C:
-			if !pidAlive(pid) {
-				removePlaybackState()
-				return
-			}
+		if os.IsNotExist(err) {
+			return false, nil
 		}
+		removePlaybackState()
+		return false, nil
 	}
-}
 
-func toggleKewState(state playbackState, kill bool) error {
-	paused := state.Paused || isPIDStopped(state.KewPID)
-	if paused {
-		resumeKew(state.KewPID)
-		state.Paused = false
-		fmt.Fprintf(os.Stderr, "focus: resumed kew process %d\n", state.KewPID)
-	} else {
-		if kill {
-			stopKew(state.KewPID)
-			state.Paused = true
-			fmt.Fprintf(os.Stderr, "focus: stopped kew process %d\n", state.KewPID)
-		} else {
-			pauseKew(state.KewPID)
-			state.Paused = true
-			fmt.Fprintf(os.Stderr, "focus: paused kew process %d\n", state.KewPID)
-		}
+	if state.KewPID <= 0 || !pidAlive(state.KewPID) {
+		removePlaybackState()
+		return false, nil
 	}
-	return writePlaybackState(state)
+
+	state.FocusPID = os.Getpid()
+	if err := writePlaybackState(state); err != nil {
+		fmt.Fprintf(os.Stderr, "focus: could not write playback state: %v\n", err)
+	}
+
+	monitorKewUntilDisconnect(state.KewPID, deviceName)
+	return true, nil
 }
 
 func getProcessName(pid int) (string, error) {
@@ -230,19 +144,6 @@ func getProcessName(pid int) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-func pauseKew(pid int) {
-	if pid <= 0 {
-		return
-	}
-	name, err := getProcessName(pid)
-	if err != nil || !strings.Contains(name, "kew") {
-		return
-	}
-	if err := syscall.Kill(-pid, syscall.SIGSTOP); err != nil {
-		_ = syscall.Kill(pid, syscall.SIGSTOP)
-	}
-}
-
 func stopKew(pid int) {
 	if pid <= 0 {
 		return
@@ -253,15 +154,6 @@ func stopKew(pid int) {
 	}
 	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
-	}
-}
-
-func resumeKew(pid int) {
-	if pid <= 0 {
-		return
-	}
-	if err := syscall.Kill(-pid, syscall.SIGCONT); err != nil {
-		_ = syscall.Kill(pid, syscall.SIGCONT)
 	}
 }
 
@@ -282,16 +174,32 @@ func findExistingKewPID() (int, error) {
 	return 0, nil
 }
 
-func isPIDStopped(pid int) bool {
-	if pid <= 0 {
-		return false
+func monitorKewUntilDisconnect(pid int, deviceName string) {
+	disconnectCh := make(chan error, 1)
+	go monitorPlaybackDevice(deviceName, disconnectCh)
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case err := <-disconnectCh:
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "focus: playback device monitor error: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "focus: playback device %q disconnected\n", deviceName)
+			}
+			fmt.Fprintln(os.Stderr, "focus: stopping kew")
+			stopKew(pid)
+			removePlaybackState()
+			return
+		case <-ticker.C:
+			if !pidAlive(pid) {
+				removePlaybackState()
+				return
+			}
+		}
 	}
-	output, err := exec.Command("ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		return false
-	}
-	state := strings.TrimSpace(string(output))
-	return strings.HasPrefix(state, "T")
 }
 
 func pidAlive(pid int) bool {

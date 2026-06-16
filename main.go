@@ -21,8 +21,7 @@ func main() {
 	uninstallHotkey := flag.Bool("uninstall-hotkey", false, "uninstall the global hotkey")
 	hotkeyDaemon := flag.Bool("hotkey-daemon", false, "run the global hotkey daemon")
 	kewNoUI := flag.Bool("noui", false, "pass --noui to kew")
-	toggle := flag.Bool("toggle", false, "debounce hotkey repeats; existing kew playback is paused/resumed")
-	kill := flag.Bool("kill", false, "fully stop kew with SIGKILL instead of pausing")
+	toggle := flag.Bool("toggle", false, "debounce hotkey repeats; toggle kew playback on/off")
 	deviceName := flag.String("device", getenvDefault("FOCUS_BT_DEVICE", defaultDeviceName), "paired Bluetooth device name to connect")
 	defaultQuery := flag.String("query", getenvDefault("FOCUS_KEW_QUERY", defaultKewQuery), "kew search query to use when no positional query is supplied")
 	flag.Parse()
@@ -50,7 +49,6 @@ func main() {
 		return
 	}
 
-	targetOutputAvailableForToggle := true
 	if *toggle {
 		debounced, err := debounceToggle(750 * time.Millisecond)
 		if err != nil {
@@ -60,38 +58,16 @@ func main() {
 			return
 		}
 
-		available, err := isAudioOutputAvailable(*deviceName)
-		if err != nil || !available {
-			targetOutputAvailableForToggle = false
-			fmt.Fprintf(os.Stderr, "focus: audio output %q is unavailable; connecting before touching kew\n", *deviceName)
-		}
-	}
-
-	if !*toggle || targetOutputAvailableForToggle {
-		toggled, err := toggleExistingKewIfAny(*kill)
+		stopped, err := stopExistingKewIfAny()
 		if err != nil {
-			fatal("could not toggle existing kew process", err)
+			fatal("could not stop existing kew process", err)
 		}
-		if toggled {
+		if stopped {
 			return
 		}
 	}
 
-	stateWritten := false
-	if err := writePlaybackState(playbackState{FocusPID: os.Getpid()}); err != nil {
-		fmt.Fprintf(os.Stderr, "focus: could not write playback startup state: %v\n", err)
-	} else {
-		stateWritten = true
-	}
-
-	kewArgs := flag.Args()
-	if len(kewArgs) == 0 {
-		kewArgs = strings.Fields(*defaultQuery)
-	}
-	if *kewNoUI {
-		kewArgs = append([]string{"--noui"}, kewArgs...)
-	}
-
+	// No existing kew running — start a new playback session.
 	connectedName := *deviceName
 
 	fmt.Fprintf(os.Stderr, "focus: checking audio output %q...\n", *deviceName)
@@ -122,18 +98,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, "focus: audio output set to %q\n", connectedName)
 	}
 
-	if *toggle && !targetOutputAvailableForToggle {
-		resumed, err := resumeExistingKewIfAny(connectedName)
-		if err != nil {
-			fatal("could not resume existing kew process", err)
-		}
-		if resumed {
-			return
-		}
+	// If a kew process from a previous focus session is still alive, adopt it.
+	if adopted, err := adoptExistingKew(connectedName); err != nil {
+		fatal("could not adopt existing kew process", err)
+	} else if adopted {
+		return
 	}
 
 	if _, err := exec.LookPath("kew"); err != nil {
 		fatal("kew is not installed or not in PATH", err)
+	}
+
+	kewArgs := flag.Args()
+	if len(kewArgs) == 0 {
+		kewArgs = strings.Fields(*defaultQuery)
+	}
+	if *kewNoUI {
+		kewArgs = append([]string{"--noui"}, kewArgs...)
 	}
 
 	fmt.Fprintf(os.Stderr, "focus: starting kew %q\n", strings.Join(kewArgs, " "))
@@ -148,8 +129,6 @@ func main() {
 	}
 	if err := writePlaybackState(playbackState{FocusPID: os.Getpid(), KewPID: cmd.Process.Pid}); err != nil {
 		fmt.Fprintf(os.Stderr, "focus: could not write playback state: %v\n", err)
-	} else {
-		stateWritten = true
 	}
 
 	waitCh := make(chan error, 1)
@@ -162,9 +141,7 @@ func main() {
 
 	select {
 	case err := <-waitCh:
-		if stateWritten {
-			removePlaybackState()
-		}
+		removePlaybackState()
 		handleKewExit(err)
 	case err := <-disconnectCh:
 		if err != nil {
@@ -172,16 +149,9 @@ func main() {
 		} else {
 			fmt.Fprintf(os.Stderr, "focus: playback device %q disconnected\n", connectedName)
 		}
-		if *kill {
-			fmt.Fprintln(os.Stderr, "focus: stopping kew")
-			stopKew(cmd.Process.Pid)
-		} else {
-			fmt.Fprintln(os.Stderr, "focus: pausing kew")
-			pauseKew(cmd.Process.Pid)
-		}
-		if err := writePlaybackState(playbackState{KewPID: cmd.Process.Pid, Paused: *kill}); err != nil {
-			fmt.Fprintf(os.Stderr, "focus: could not write paused playback state: %v\n", err)
-		}
+		fmt.Fprintln(os.Stderr, "focus: stopping kew")
+		stopKew(cmd.Process.Pid)
+		removePlaybackState()
 	}
 }
 
